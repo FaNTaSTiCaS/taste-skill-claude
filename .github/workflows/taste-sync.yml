@@ -1,0 +1,52 @@
+name: Taste Skill sync
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build plugin from newest official Taste Skill release
+        run: |
+          set -euo pipefail
+          UP=https://github.com/Leonxlnx/taste-skill.git
+          TAG=$(git ls-remote --tags --refs "$UP" | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          [ -n "$TAG" ] || { echo "no official tag"; exit 1; }
+          if [ "$(cat .upstream-tag 2>/dev/null || true)" = "$TAG" ]; then echo "up to date: $TAG"; exit 0; fi
+          SRC=$(mktemp -d)
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$UP" "$SRC"
+          python3 -I - "$SRC" "$TAG" <<'PY'
+          import json, os, re, shutil, sys
+          src, tag = sys.argv[1], sys.argv[2]
+          e = json.load(open(os.path.join(src, ".claude-plugin/marketplace.json")))["plugins"][0]
+          sk = e["skills"][0] if isinstance(e["skills"], list) else e["skills"]
+          skdir = os.path.normpath(os.path.join(src, sk))
+          if not skdir.startswith(src + os.sep): sys.exit("bad skills path")
+          fm = open(os.path.join(skdir, "SKILL.md"), encoding="utf-8").read().split("---")[1]
+          name = re.search(r"^name:\s*(\S+)\s*$", fm, re.M).group(1)
+          if not re.fullmatch(r"[a-z0-9-]+", name): sys.exit("bad skill name")
+          out = "plugins/taste-skill"
+          shutil.rmtree(out, ignore_errors=True)
+          os.makedirs(out + "/.claude-plugin"); os.makedirs(out + "/skills")
+          keys = ["name","version","description","author","homepage","repository","license","keywords"]
+          pj = {k: e[k] for k in keys if k in e}
+          json.dump(pj, open(out + "/.claude-plugin/plugin.json", "w"), indent=2, ensure_ascii=False)
+          shutil.copytree(skdir, f"{out}/skills/{name}", symlinks=True)
+          shutil.copy(os.path.join(src, "LICENSE"), out + "/LICENSE")
+          os.makedirs(".claude-plugin", exist_ok=True)
+          mp = {"name": "taste-skill-auto",
+                "metadata": {"description": "Taste Skill, rebuilt automatically from the newest official release."},
+                "owner": {"name": os.environ.get("GITHUB_REPOSITORY_OWNER", "owner")},
+                "plugins": [{"name": "taste-skill", "source": "./plugins/taste-skill",
+                             "description": pj.get("description", ""), "version": pj.get("version", "")}]}
+          json.dump(mp, open(".claude-plugin/marketplace.json", "w"), indent=2, ensure_ascii=False)
+          open(".upstream-tag", "w").write(tag + "\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Taste Skill $TAG" && git push
