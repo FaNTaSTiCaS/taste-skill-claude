@@ -1,7 +1,7 @@
 {
-  "name": "taste-skill-auto",
+  "name": "taste-impeccable-auto",
   "metadata": {
-    "description": "Taste Skill, rebuilt automatically from the newest official release."
+    "description": "Taste Skill and Impeccable, rebuilt every Monday from their newest official releases."
   },
   "owner": {
     "name": "FaNTaSTiCaS"
@@ -12,6 +12,12 @@
       "source": "./plugins/taste-skill",
       "description": "tasteskill 2.5.1: professional company websites at the figma.com and x.ai level, with one section per screen, real photographs, real product UI, effects kept for tech and gaming pages, and a real-browser checker and finish gate.",
       "version": "2.5.1"
+    },
+    {
+      "name": "impeccable",
+      "source": "./plugins/impeccable",
+      "description": "Design fluency for frontend development. 1 skill with 24 commands (/impeccable polish, /impeccable audit, /impeccable critique, etc.) and curated anti-pattern detection.",
+      "version": "4.10.0"
     }
   ]
 }
