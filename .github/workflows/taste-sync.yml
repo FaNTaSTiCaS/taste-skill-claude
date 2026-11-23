@@ -1,7 +1,7 @@
 name: Taste Skill sync
 on:
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "17 3 * * 1"   # every Monday 03:17 UTC (06:17 Istanbul)
   workflow_dispatch:
 permissions:
   contents: write
@@ -10,43 +10,83 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build plugin from newest official Taste Skill release
+      - name: Build plugins from newest official Taste Skill and Impeccable releases
         run: |
           set -euo pipefail
-          UP=https://github.com/Leonxlnx/taste-skill.git
-          TAG=$(git ls-remote --tags --refs "$UP" | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          [ -n "$TAG" ] || { echo "no official tag"; exit 1; }
-          if [ "$(cat .upstream-tag 2>/dev/null || true)" = "$TAG" ]; then echo "up to date: $TAG"; exit 0; fi
-          SRC=$(mktemp -d)
-          git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$UP" "$SRC"
-          python3 -I - "$SRC" "$TAG" <<'PY'
+          newest() { git ls-remote --tags --refs "$1" | sed 's#.*refs/tags/##' | grep -E "$2" | sort -V | tail -1; }
+          TASTE_UP=https://github.com/Leonxlnx/taste-skill.git
+          IMP_UP=https://github.com/pbakaus/impeccable.git
+          TASTE_TAG=$(newest "$TASTE_UP" '^v[0-9]+\.[0-9]+\.[0-9]+$')
+          IMP_TAG=$(newest "$IMP_UP" '^skill-v[0-9]+\.[0-9]+\.[0-9]+$')
+          [ -n "$TASTE_TAG" ] || { echo "no official Taste tag"; exit 1; }
+          [ -n "$IMP_TAG" ] || { echo "no official Impeccable tag"; exit 1; }
+          TASTE_SRC=""; IMP_SRC=""
+          if [ "$(cat .upstream-tag 2>/dev/null || true)" != "$TASTE_TAG" ]; then
+            TASTE_SRC=$(mktemp -d)
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "$TASTE_TAG" "$TASTE_UP" "$TASTE_SRC"
+          else echo "Taste up to date: $TASTE_TAG"; fi
+          if [ "$(cat .upstream-tag-impeccable 2>/dev/null || true)" != "$IMP_TAG" ]; then
+            IMP_SRC=$(mktemp -d)
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "$IMP_TAG" "$IMP_UP" "$IMP_SRC"
+          else echo "Impeccable up to date: $IMP_TAG"; fi
+          python3 -I - "$TASTE_SRC" "$TASTE_TAG" "$IMP_SRC" "$IMP_TAG" <<'PY'
           import json, os, re, shutil, sys
-          src, tag = sys.argv[1], sys.argv[2]
-          e = json.load(open(os.path.join(src, ".claude-plugin/marketplace.json")))["plugins"][0]
-          sk = e["skills"][0] if isinstance(e["skills"], list) else e["skills"]
-          skdir = os.path.normpath(os.path.join(src, sk))
-          if not skdir.startswith(src + os.sep): sys.exit("bad skills path")
-          fm = open(os.path.join(skdir, "SKILL.md"), encoding="utf-8").read().split("---")[1]
-          name = re.search(r"^name:\s*(\S+)\s*$", fm, re.M).group(1)
-          if not re.fullmatch(r"[a-z0-9-]+", name): sys.exit("bad skill name")
-          out = "plugins/taste-skill"
-          shutil.rmtree(out, ignore_errors=True)
-          os.makedirs(out + "/.claude-plugin"); os.makedirs(out + "/skills")
-          keys = ["name","version","description","author","homepage","repository","license","keywords"]
-          pj = {k: e[k] for k in keys if k in e}
-          json.dump(pj, open(out + "/.claude-plugin/plugin.json", "w"), indent=2, ensure_ascii=False)
-          shutil.copytree(skdir, f"{out}/skills/{name}", symlinks=True)
-          shutil.copy(os.path.join(src, "LICENSE"), out + "/LICENSE")
+          taste_src, taste_tag, imp_src, imp_tag = sys.argv[1:5]
+
+          def inside(root, rel):
+              p = os.path.normpath(os.path.join(root, rel))
+              if not p.startswith(root + os.sep): sys.exit("path escapes source: " + rel)
+              return p
+
+          def fresh(out):
+              shutil.rmtree(out, ignore_errors=True)
+              os.makedirs(out)
+
+          if taste_src:
+              e = json.load(open(os.path.join(taste_src, ".claude-plugin/marketplace.json")))["plugins"][0]
+              sk = e["skills"][0] if isinstance(e["skills"], list) else e["skills"]
+              skdir = inside(taste_src, sk)
+              fm = open(os.path.join(skdir, "SKILL.md"), encoding="utf-8").read().split("---")[1]
+              name = re.search(r"^name:\s*(\S+)\s*$", fm, re.M).group(1)
+              if not re.fullmatch(r"[a-z0-9-]+", name): sys.exit("bad skill name")
+              out = "plugins/taste-skill"
+              fresh(out); os.makedirs(out + "/.claude-plugin"); os.makedirs(out + "/skills")
+              keys = ["name","version","description","author","homepage","repository","license","keywords"]
+              pj = {k: e[k] for k in keys if k in e}
+              json.dump(pj, open(out + "/.claude-plugin/plugin.json", "w"), indent=2, ensure_ascii=False)
+              shutil.copytree(skdir, f"{out}/skills/{name}", symlinks=True)
+              shutil.copy(os.path.join(taste_src, "LICENSE"), out + "/LICENSE")
+              open(".upstream-tag", "w").write(taste_tag + "\n")
+
+          if imp_src:
+              m = json.load(open(os.path.join(imp_src, ".claude-plugin/marketplace.json")))
+              e = next(p for p in m["plugins"] if p["name"] == "impeccable")
+              pdir = inside(imp_src, e["source"])
+              pj = json.load(open(os.path.join(pdir, ".claude-plugin/plugin.json")))
+              if pj.get("name") != "impeccable": sys.exit("unexpected Impeccable plugin name")
+              out = "plugins/impeccable"
+              shutil.rmtree(out, ignore_errors=True)
+              shutil.copytree(pdir, out, symlinks=True)
+              for f in ("LICENSE", "NOTICE.md"):
+                  if os.path.exists(os.path.join(imp_src, f)): shutil.copy(os.path.join(imp_src, f), out + "/" + f)
+              open(".upstream-tag-impeccable", "w").write(imp_tag + "\n")
+
+          plugins = []
+          for name in ("taste-skill", "impeccable"):
+              f = f"plugins/{name}/.claude-plugin/plugin.json"
+              if not os.path.exists(f): sys.exit("missing " + f)
+              pj = json.load(open(f))
+              plugins.append({"name": pj["name"], "source": f"./plugins/{name}",
+                              "description": pj.get("description", ""), "version": pj.get("version", "")})
           os.makedirs(".claude-plugin", exist_ok=True)
-          mp = {"name": "taste-skill-auto",
-                "metadata": {"description": "Taste Skill, rebuilt automatically from the newest official release."},
+          mp = {"name": "taste-impeccable-auto",
+                "metadata": {"description": "Taste Skill and Impeccable, rebuilt every Monday from their newest official releases."},
                 "owner": {"name": os.environ.get("GITHUB_REPOSITORY_OWNER", "owner")},
-                "plugins": [{"name": "taste-skill", "source": "./plugins/taste-skill",
-                             "description": pj.get("description", ""), "version": pj.get("version", "")}]}
+                "plugins": plugins}
           json.dump(mp, open(".claude-plugin/marketplace.json", "w"), indent=2, ensure_ascii=False)
-          open(".upstream-tag", "w").write(tag + "\n")
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -q -m "Taste Skill $TAG" && git push
+          if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
+          git commit -q -m "Taste Skill $TASTE_TAG, Impeccable $IMP_TAG" && git push
